@@ -81,6 +81,16 @@ struct CoordinatorState {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
+    tokio::spawn(async {
+        use tokio::net::TcpListener;
+        if let Ok(listener) = TcpListener::bind("0.0.0.0:8080").await {
+            info!("Dummy TCP listener active on 0.0.0.0:8080");
+            loop {
+                let _ = listener.accept().await;
+            }
+        }
+    });
+
     let bind_addr = format!("0.0.0.0:{}", LISTEN_PORT);
     let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
     info!("Coordinator listening on {}", bind_addr);
