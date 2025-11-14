@@ -1,13 +1,22 @@
 [package]
 name = "CoordinatorServer"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+# Use warp instead of axum
+warp = "0.3"
+
+# Async runtime
 tokio = { version = "1", features = ["full"] }
+
+# Other dependencies
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-dashmap = "5.4"
-anyhow = "1.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+uuid = { version = "1", features = ["v4"] }
+# align with web-socket usage
+tokio-tungstenite = "0.28"
+futures = "0.3"
+dashmap = "5.5.3"
+
+# Keep types used directly by the project
