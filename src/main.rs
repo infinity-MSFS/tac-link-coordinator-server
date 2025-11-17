@@ -71,9 +71,10 @@ async fn main() {
         .and(warp::body::json())
         .and_then(send_ice);
 
-    // GET /ws/:lobby_code/:peer_id -> websocket upgrade
-    let ws_route = warp::path!(String / String)
-        .and(warp::path("ws"))
+    // WebSocket /ws/{lobby_code}/{peer_id}
+    let ws_route = warp::path("ws")
+        .and(warp::path::param::<String>())
+        .and(warp::path::param::<String>())
         .and(warp::ws())
         .and(state_filter.clone())
         .and_then(
@@ -84,6 +85,20 @@ async fn main() {
             },
         );
 
+    // POST /request_player_list
+    let request_player_list_route = warp::path("request_player_list")
+        .and(warp::post())
+        .and(state_filter.clone())
+        .and(warp::body::json())
+        .and_then(request_player_list);
+
+    // POST /send_player_list
+    let send_player_list_route = warp::path("send_player_list")
+        .and(warp::post())
+        .and(state_filter.clone())
+        .and(warp::body::json())
+        .and_then(send_player_list);
+
     let routes = create
         .or(join)
         .or(register)
@@ -91,22 +106,13 @@ async fn main() {
         .or(send_offer_route)
         .or(send_answer_route)
         .or(send_ice_route)
-        .or(warp::path("ws")
-            .and(warp::path::param())
-            .and(warp::path::param())
-            .and(warp::ws())
-            .and(state_filter.clone())
-            .and_then(
-                |a: String, b: String, ws: warp::ws::Ws, state: AppState| async move {
-                    Ok::<_, warp::Rejection>(
-                        ws.on_upgrade(move |socket| handle_socket(socket, a, b, state)),
-                    )
-                },
-            ))
+        .or(request_player_list_route)
+        .or(send_player_list_route)
+        .or(ws_route)
         .with(warp::cors().allow_any_origin());
 
-    println!("Coordinator server running on 0.0.0.0:8080");
-    warp::serve(routes).run(([0, 0, 0, 0], 3000)).await;
+    println!("Coordinator server running on 127.0.0.1:3000");
+    warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
 }
 
 async fn create_lobby(state: AppState) -> Result<impl Reply, warp::Rejection> {
@@ -316,4 +322,71 @@ fn generate_code() -> String {
         .take(6)
         .collect();
     code
+}
+
+#[derive(serde::Deserialize)]
+struct PlayerListRequest {
+    lobby_code: String,
+    requester_id: String,
+}
+
+async fn request_player_list(
+    state: AppState,
+    payload: PlayerListRequest,
+) -> Result<impl Reply, warp::Rejection> {
+    if let Some(lobby) = state.lobbies.get(&payload.lobby_code) {
+        if let Some(peer) = lobby.peers.get(&lobby.host_id) {
+            let msg = serde_json::json!({
+                "type": "request_player_list",
+                "requester_id": payload.requester_id
+            })
+            .to_string();
+
+            let _ = peer.value().send(msg);
+        }
+        return Ok(warp::reply::with_status(warp::reply(), StatusCode::OK));
+    }
+
+    Ok(warp::reply::with_status(
+        warp::reply(),
+        StatusCode::NOT_FOUND,
+    ))
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct PlayerInfo {
+    id: String,
+    name: String,
+    ip: String,
+    is_host: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct PlayerListPayload {
+    lobby_code: String,
+    players: Vec<PlayerInfo>,
+}
+
+async fn send_player_list(
+    state: AppState,
+    payload: PlayerListPayload,
+) -> Result<impl Reply, warp::Rejection> {
+    if let Some(lobby) = state.lobbies.get(&payload.lobby_code) {
+        let msg = serde_json::json!({
+            "type": "players_updated",
+            "players": payload.players
+        })
+            .to_string();
+
+        for peer in lobby.peers.iter() {
+            let _ = peer.value().send(msg.clone());
+        }
+
+        return Ok(warp::reply::with_status(warp::reply(), StatusCode::OK));
+    }
+
+    Ok(warp::reply::with_status(
+        warp::reply(),
+        StatusCode::NOT_FOUND,
+    ))
 }
