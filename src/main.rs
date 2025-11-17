@@ -99,6 +99,13 @@ async fn main() {
         .and(warp::body::json())
         .and_then(send_player_list);
 
+    // POST /announce_username
+    let announce_username_route = warp::path("announce_username")
+        .and(warp::post())
+        .and(state_filter.clone())
+        .and(warp::body::json())
+        .and_then(announce_username);
+
     let routes = create
         .or(join)
         .or(register)
@@ -108,6 +115,7 @@ async fn main() {
         .or(send_ice_route)
         .or(request_player_list_route)
         .or(send_player_list_route)
+        .or(announce_username_route)
         .or(ws_route)
         .with(warp::cors().allow_any_origin());
 
@@ -376,8 +384,42 @@ async fn send_player_list(
             "type": "players_updated",
             "players": payload.players
         })
-            .to_string();
+        .to_string();
+        println!("{}", msg);
 
+        for peer in lobby.peers.iter() {
+            let _ = peer.value().send(msg.clone());
+        }
+
+        return Ok(warp::reply::with_status(warp::reply(), StatusCode::OK));
+    }
+
+    Ok(warp::reply::with_status(
+        warp::reply(),
+        StatusCode::NOT_FOUND,
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct AnnounceUsernamePayload {
+    lobby_code: String,
+    player_id: String,
+    username: String,
+}
+
+async fn announce_username(
+    state: AppState,
+    payload: AnnounceUsernamePayload,
+) -> Result<impl Reply, warp::Rejection> {
+    if let Some(lobby) = state.lobbies.get(&payload.lobby_code) {
+
+        let msg = serde_json::json!({
+            "type": "username_announced",
+            "player_id": payload.player_id,
+            "username": payload.username
+        })
+            .to_string();
+        
         for peer in lobby.peers.iter() {
             let _ = peer.value().send(msg.clone());
         }
