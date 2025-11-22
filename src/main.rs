@@ -106,6 +106,15 @@ async fn main() {
         .and(warp::body::json())
         .and_then(announce_username);
 
+    let kick_route = warp::path("kick")
+        .and(warp::post())
+        .and(state_filter.clone())
+        .and(warp::body::json())
+        .and_then(kick_player);
+
+    // simple health route for platform health checks (e.g. Fly)
+    let health = warp::path::end().map(|| warp::reply::with_status("OK", StatusCode::OK));
+
     let routes = create
         .or(join)
         .or(register)
@@ -117,10 +126,18 @@ async fn main() {
         .or(send_player_list_route)
         .or(announce_username_route)
         .or(ws_route)
+        .or(kick_route)
+        .or(health)
         .with(warp::cors().allow_any_origin());
 
-    println!("Coordinator server running on 127.0.0.1:3000");
-    warp::serve(routes).run(([127, 0, 0, 1], 3000)).await;
+    // Read port from PORT env (used by Fly and other platforms) or default to 3000
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(3000);
+
+    println!("Coordinator server running on 0.0.0.0:{}", port);
+    warp::serve(routes).run(([0, 0, 0, 0], port)).await;
 }
 
 async fn create_lobby(state: AppState) -> Result<impl Reply, warp::Rejection> {
@@ -412,17 +429,58 @@ async fn announce_username(
     payload: AnnounceUsernamePayload,
 ) -> Result<impl Reply, warp::Rejection> {
     if let Some(lobby) = state.lobbies.get(&payload.lobby_code) {
-
         let msg = serde_json::json!({
             "type": "username_announced",
             "player_id": payload.player_id,
             "username": payload.username
         })
-            .to_string();
-        
+        .to_string();
+
         for peer in lobby.peers.iter() {
             let _ = peer.value().send(msg.clone());
         }
+
+        return Ok(warp::reply::with_status(warp::reply(), StatusCode::OK));
+    }
+
+    Ok(warp::reply::with_status(
+        warp::reply(),
+        StatusCode::NOT_FOUND,
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct KickPayload {
+    lobby_code: String,
+    target_id: String,
+    requester_id: String,
+    reason: Option<String>,
+}
+
+async fn kick_player(state: AppState, payload: KickPayload) -> Result<impl Reply, warp::Rejection> {
+    if let Some(lobby) = state.lobbies.get(&payload.lobby_code) {
+        if payload.requester_id != lobby.host_id {
+            return Ok(warp::reply::with_status(
+                warp::reply(),
+                StatusCode::FORBIDDEN,
+            ));
+        }
+
+        if let Some(peer) = lobby.peers.get(&payload.target_id) {
+            let msg = serde_json::json!({
+                "type": "kicked",
+                "reason": payload.reason.unwrap_or_else(|| "removed by host".to_string())
+            })
+            .to_string();
+
+            let _ = peer.value().send(msg);
+        } else {
+            return Ok(warp::reply::with_status(
+                warp::reply(),
+                StatusCode::NOT_FOUND,
+            ));
+        }
+        lobby.peers.remove(&payload.target_id);
 
         return Ok(warp::reply::with_status(warp::reply(), StatusCode::OK));
     }
